@@ -74,5 +74,5 @@ The script expects this layout under `~/compliance_test`. Install Sail 0.16, the
 
 - One test per instruction (the `-00` variants), so this is a conformance gate and not exhaustive verification.
 - No Zicsr, traps or privileged-mode tests. The suite was configured for a core without them.
-- Misaligned (cross-word) loads and stores are unsupported: loads return 0 and stores are dropped, with no trap. The ACT4 base tests do not exercise this; a directed test confirmed the behavior.
+- Misaligned (cross-word) loads and stores are unsupported: loads return 0 and stores are dropped, with no trap. The ACT4 base tests do not exercise this.
 - Instruction and data memories are separate and both preloaded with the program image, so self-modifying code is not supported.
