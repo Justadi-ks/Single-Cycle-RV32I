@@ -9,7 +9,7 @@
 #include <string>
 
 static constexpr uint32_t BASE      = 0x80000000u;
-static constexpr uint32_t MEM_BYTES = 262144u;
+static constexpr uint32_t MEM_BYTES = 262144u;   // must equal MEM_BYTES in the RTL memories
 
 #define IMEM(i) dut->rootp->rv32i_soc_top__DOT__u_imem__DOT__mem[i]
 #define DMEM(i) dut->rootp->rv32i_soc_top__DOT__u_dmem__DOT__mem[i]
@@ -69,34 +69,62 @@ int main(int argc, char** argv) {
     }
     dut->reset = 0;
 
+    auto rd32 = [&](uint32_t off) -> uint32_t {
+        return (uint32_t)DMEM(off) | ((uint32_t)DMEM(off+1) << 8)
+             | ((uint32_t)DMEM(off+2) << 16) | ((uint32_t)DMEM(off+3) << 24);
+    };
+    auto clr64 = [&](uint32_t off) { for (int k = 0; k < 8; k++) DMEM(off + k) = 0; };
+
+    // tohost is a 64-bit HTIF register: low word at +0, high word at +4.
+    //  - high word != 0 : an HTIF command. Device 1 / command 1 = console putchar
+    //                     (low word = the character). We print it and clear tohost.
+    //  - high word == 0 and low bit set : exit request (1 = pass). The program keeps
+    //                     rewriting it in a loop, so we require it to be stable for
+    //                     8 cycles to ignore the brief state in the middle of a putchar.
     uint32_t tohost_off = tohost_addr - BASE;
     bool halted = false;
+    uint32_t tohost_final = 0;
+    uint32_t halt_pc = 0;
+    int exit_cnt = 0;
     uint64_t cycle = 0;
 
     for (; cycle < max_cycles; cycle++) {
         dut->clk = 0; dut->eval();
         dut->clk = 1; dut->eval();
-        uint32_t tohost_val = DMEM(tohost_off)
-                            | (DMEM(tohost_off+1) << 8)
-                            | (DMEM(tohost_off+2) << 16)
-                            | (DMEM(tohost_off+3) << 24);
-        if (tohost_val != 0) { halted = true; break; }
+
+        uint32_t lo = rd32(tohost_off), hi = rd32(tohost_off + 4);
+        if (hi != 0) {
+            if ((hi >> 24) == 1 && ((hi >> 16) & 0xff) == 1) fputc((int)(lo & 0xff), stderr);
+            clr64(tohost_off);
+            exit_cnt = 0;
+        } else if (lo & 1) {
+            if (++exit_cnt >= 8) {
+                halted = true; tohost_final = lo;
+                halt_pc = dut->rootp->rv32i_soc_top__DOT__pc;
+                break;
+            }
+        } else {
+            exit_cnt = 0;
+        }
     }
 
     if (!halted)
-        fprintf(stderr, "TIMEOUT after %llu cycles (no tohost write) - %s\n",
+        fprintf(stderr, "TIMEOUT after %llu cycles (no HTIF exit) - %s\n",
                 (unsigned long long)cycle, elf_path);
 
     std::ofstream out(sig_out);
     if (!out) { fprintf(stderr, "cannot write %s\n", sig_out); delete dut; return 1; }
     for (uint32_t addr = begin_sig; addr < end_sig; addr += 4) {
         uint32_t off = addr - BASE;
-        uint32_t word = DMEM(off) | (DMEM(off+1) << 8) | (DMEM(off+2) << 16) | (DMEM(off+3) << 24);
         char line[16];
-        snprintf(line, sizeof(line), "%08x\n", word);
+        snprintf(line, sizeof(line), "%08x\n", rd32(off));
         out << line;
     }
 
+    if (halted && tohost_final != 1)
+        fprintf(stderr, "FAIL: tohost = 0x%x at cycle %llu, pc=0x%x - %s\n",
+                tohost_final, (unsigned long long)cycle, halt_pc, elf_path);
+
     delete dut;
-    return halted ? 0 : 2;
+    return !halted ? 2 : (tohost_final == 1 ? 0 : 3);
 }

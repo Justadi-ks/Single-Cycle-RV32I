@@ -1,6 +1,6 @@
 # RISC-V compliance results (RV32I + M)
 
-**Result: 47 / 47 tests pass** (39 RV32I, 8 RV32M), checked against the Sail RISC-V reference model.
+**Result: 47 / 47 tests pass** (39 RV32I, 8 RV32M), each run to its real exit (`tohost == 1`) with a signature identical to the Sail RISC-V reference model's.
 
 ## Setup tested
 
@@ -17,9 +17,9 @@ Core configuration under test: RV32I + M (with Zmmul) and no CSRs or traps.
 ## How it works
 
 1. ACT4 compiles each test into an ELF, and Sail runs it to produce a reference signature.
-2. `sim_main.cpp` (Verilator) loads the same ELF into the core's instruction and data memories, both based at `0x80000000`, and runs the core until the test writes a non-zero value to `tohost` (2,000,000-cycle timeout).
-3. It dumps the signature region (`begin_signature` to `end_signature`) from data memory.
-4. `run_tests.sh` compares that signature against Sail's, byte for byte. A test passes only if they are identical.
+2. `sim_main.cpp` (Verilator) loads the same ELF into the core's instruction and data memories, both based at `0x80000000`, and runs the core. It decodes `tohost` as the 64-bit HTIF register: a write with `0x01010000` in the high word is a console character (written to the test's log and cleared), and a write with the low bit set and a zero high word is the exit request. Only the exit value `1` counts as a pass, and it must stay stable for 8 cycles so a half-written console character is never mistaken for an exit. A timeout is 2,000,000 cycles.
+3. After the exit it dumps the signature region (`begin_signature` to `end_signature`) from data memory.
+4. `run_tests.sh` fails a test if the simulator errors, times out, exits with a value other than 1, or produces an empty signature. Otherwise it compares the signature against Sail's, byte for byte, and the test passes only if they are identical. Stale result files are deleted before each run.
 
 The repository's modules had no top level, so `rtl/rv32i_soc_top.sv` connects them: it instantiates `rv32i_if_id_ex`, `rv32i_mem_stage` and `rv32i_data_memory`, adds `rv32i_inst_memory` (combinational read), and derives register-write, load/store and write-back control from the opcode. The existing core modules are unchanged. This result covers those modules plus that wrapper.
 
@@ -74,5 +74,5 @@ The script expects this layout under `~/compliance_test`. Install Sail 0.16, the
 
 - One test per instruction (the `-00` variants), so this is a conformance gate and not exhaustive verification.
 - No Zicsr, traps or privileged-mode tests. The suite was configured for a core without them.
-- Misaligned-access behavior is not tested.
+- Misaligned (cross-word) loads and stores are unsupported: loads return 0 and stores are dropped, with no trap. The ACT4 base tests do not exercise this; a directed test confirmed the behavior.
 - Instruction and data memories are separate and both preloaded with the program image, so self-modifying code is not supported.
